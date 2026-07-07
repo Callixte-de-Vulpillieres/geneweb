@@ -3,14 +3,26 @@
 A complete local OIDC login against a real identity provider (Keycloak), so you
 can exercise wizard / friend / visitor access, the person mapping, and logout.
 
-> **You must be on the `oidc-e2e-test` branch.** It ships the configs the
-> commands below reference (`oidc-e2e/keycloak-realm.json`, `oidc-e2e/Caddyfile`,
-> `oidc-e2e/bases/galichet.gwf`) and builds the database from the tracked sample
-> `test/galichet.gw` — nothing needs to be created by hand.
->
-> ```sh
-> git switch oidc-e2e-test   # git fetch <remote> oidc-e2e-test first if needed
-> ```
+> **You must run this from the `oidc-e2e-test` branch of the fork.** It ships the
+> configs the commands below reference (`oidc-e2e/keycloak-realm.json`,
+> `oidc-e2e/Caddyfile`, `oidc-e2e/bases/galichet.gwf`) and builds the database
+> from the tracked sample `test/galichet.gw` — nothing needs to be created by
+> hand.
+
+Clone that branch directly:
+
+```sh
+git clone -b oidc-e2e-test https://github.com/Callixte-de-Vulpillieres/geneweb.git
+cd geneweb
+```
+
+Or, if you already have a clone, add the fork and switch to it:
+
+```sh
+git remote add fork https://github.com/Callixte-de-Vulpillieres/geneweb.git
+git fetch fork oidc-e2e-test
+git switch oidc-e2e-test
+```
 
 > **OIDC is UNIX-only** (it uses `/dev/urandom`), so run this on Linux or macOS,
 > and gwd must be reached over **HTTPS** (the session cookie is `Secure` /
