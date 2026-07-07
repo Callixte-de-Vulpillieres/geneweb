@@ -29,6 +29,7 @@ on:
   push:
     branches:
       - master
+      - ci-fork-test
     paths-ignore:
       - 'etc/**'
       - 'hd/**'
