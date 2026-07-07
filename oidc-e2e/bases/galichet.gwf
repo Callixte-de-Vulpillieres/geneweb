@@ -1,0 +1,39 @@
+# Config for the OIDC end-to-end test base (see OIDC_TEST.md).
+# The database itself is built from the tracked sample test/galichet.gw.
+
+access_by_key=yes
+disable_forum=yes
+hide_private_names=no
+use_restrict=no
+show_consang=yes
+display_sosa=yes
+place_surname_link_to_ind=yes
+max_anc_level=8
+max_anc_tree=7
+max_desc_level=12
+max_desc_tree=4
+max_cousins=2000
+max_cousins_level=5
+latest_event=20
+template=*
+long_date=no
+counter=yes
+full_siblings=yes
+hide_advanced_request=no
+p_mod=
+
+# --- OpenID Connect (SSO) ---
+oidc_provider_url=http://localhost:8080/realms/geneweb
+oidc_client_id=geneweb
+oidc_client_secret=geneweb-secret
+oidc_redirect_uri=https://localhost/galichet
+oidc_user_claim=email
+oidc_role_claim=realm_access.roles
+oidc_wizard_role=geneweb-wizard
+oidc_friend_role=geneweb-friend
+oidc_provider_name=Keycloak
+
+# To also exercise legacy password auth alongside OIDC (see OIDC_TEST.md),
+# uncomment and set a password:
+#wizard_passwd=letmein
+#friend_passwd=letmein-friend

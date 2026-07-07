@@ -1,0 +1,67 @@
+{
+  "realm": "geneweb",
+  "enabled": true,
+  "sslRequired": "none",
+  "roles": {
+    "realm": [
+      { "name": "geneweb-wizard" },
+      { "name": "geneweb-friend" }
+    ]
+  },
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@test.local",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Wizard",
+      "credentials": [{ "type": "password", "value": "alice", "temporary": false }],
+      "realmRoles": ["geneweb-wizard"]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "email": "bob@test.local",
+      "emailVerified": true,
+      "firstName": "Bob",
+      "lastName": "Friend",
+      "credentials": [{ "type": "password", "value": "bob", "temporary": false }],
+      "realmRoles": ["geneweb-friend"]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "geneweb",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "geneweb-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["https://localhost/galichet*"],
+      "webOrigins": ["https://localhost"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "https://localhost/galichet*"
+      },
+      "defaultClientScopes": ["web-origins", "profile", "roles", "email", "acr"],
+      "protocolMappers": [
+        {
+          "name": "realm roles in id token",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "multivalued": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "claim.name": "realm_access.roles",
+            "jsonType.label": "String"
+          }
+        }
+      ]
+    }
+  ]
+}

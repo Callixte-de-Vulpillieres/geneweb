@@ -1,0 +1,5 @@
+# Generated at test time from test/galichet.gw (see OIDC_TEST.md); do not commit.
+bases/*.gwb/
+bases/*.gwo
+bases/*.lck
+bases/cnt/
