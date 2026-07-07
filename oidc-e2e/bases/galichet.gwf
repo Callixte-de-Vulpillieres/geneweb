@@ -31,6 +31,7 @@ oidc_user_claim=email
 oidc_role_claim=realm_access.roles
 oidc_wizard_role=geneweb-wizard
 oidc_friend_role=geneweb-friend
+oidc_person_key_claim=geneweb_person_key
 oidc_provider_name=Keycloak
 
 # To also exercise legacy password auth alongside OIDC (see OIDC_TEST.md),

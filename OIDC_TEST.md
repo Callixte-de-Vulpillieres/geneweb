@@ -62,6 +62,7 @@ oidc_user_claim=email
 oidc_role_claim=realm_access.roles
 oidc_wizard_role=geneweb-wizard
 oidc_friend_role=geneweb-friend
+oidc_person_key_claim=geneweb_person_key
 oidc_provider_name=Keycloak
 ```
 
@@ -73,19 +74,22 @@ oidc_provider_name=Keycloak
 | `oidc_user_claim` | `email` | identity (falls back to `sub`) |
 | `oidc_role_claim` | `realm_access.roles` | array claim inspected for roles |
 | `oidc_wizard_role` / `oidc_friend_role` | `geneweb-wizard` / `geneweb-friend` | grant wizard / friend |
+| `oidc_person_key_claim` | `geneweb_person_key` | claim carrying a GeneWeb person key (`first_name.occ surname`) to link the user to a database individual |
 | `oidc_provider_name` | `Keycloak` | button reads "Connect with Keycloak" |
 
 ## 3. Identity provider (Keycloak)
 
 `oidc-e2e/keycloak-realm.json` defines a realm with a confidential client (fixed
-secret, PKCE S256), two users, and a mapper putting realm roles into the
-id_token. Test users:
+secret, PKCE S256), two users, and two mappers: one puts realm roles into the
+id_token, the other exposes the user attribute `geneweb_person_key` as the claim
+`geneweb_person_key`. `alice` carries that attribute set to `Jean Pierre.0
+Galichet`, a person present in the sample base. Test users:
 
-| User | Password | Role | Result |
-|------|----------|------|--------|
-| `alice` | `alice` | `geneweb-wizard` | logs in as **wizard** |
-| `bob` | `bob` | `geneweb-friend` | logs in as **friend** |
-| _(any user with no matching role)_ | | | **visitor** (no session, sees public data) |
+| User | Password | Role | Person key | Result |
+|------|----------|------|-----------|--------|
+| `alice` | `alice` | `geneweb-wizard` | `Jean Pierre.0 Galichet` | **wizard**, linked to that individual |
+| `bob` | `bob` | `geneweb-friend` | _(none)_ | **friend** |
+| _(any user with no matching role)_ | | | | **visitor** (no session, sees public data) |
 
 ## 4. TLS front end (Caddy)
 
@@ -137,7 +141,11 @@ for your password).
    shows a **"Connect with Keycloak"** button.
 2. Click it → you're redirected to the Keycloak login page.
 3. Log in as **alice / alice** → back on the welcome page, now authenticated as a
-   **wizard** (identity + a *disconnect* button are shown).
+   **wizard** (identity + a *disconnect* button are shown). Because the id_token
+   carries `geneweb_person_key`, the identity is linked to the individual **Jean
+   Pierre Galichet**: the name shown on the welcome page links to that person's
+   record (`m=S&pn=...`). Logging in as **bob** (no person key) shows no such
+   link.
 4. Click **disconnect** (a POST form) → the session cookie is cleared and you are
    sent through the provider's logout.
 5. Repeat with **bob / bob** to see **friend** access, or a role-less user for
