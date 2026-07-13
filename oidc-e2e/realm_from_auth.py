@@ -21,7 +21,7 @@ array, so the client, roles and protocol mappers stay in sync. Each user gets:
     its identity (``oidc_user_claim=geneweb_login``) and preserve ``manitou`` /
     ``supervisor`` / ``superwizard`` matching;
   * ``geneweb_person_key`` = the key converted to ``first_name.occ surname``
-    (what GWPARAM.split_key expects), when the entry carries one;
+    (resolved by GeneWeb's dot-key parser), when the entry carries one;
   * the display name, emitted as the ``name`` claim.
 
 Example:
@@ -41,11 +41,7 @@ def clean_display(name):
 
 
 def person_key_of_field(raw):
-    """Convert a ``firstname/surname/occ`` key to ``first_name.occ surname``.
-
-    GWPARAM.split_key splits on the first space, so the surname may contain
-    spaces but the first name may not.
-    """
+    """Convert a ``firstname/surname/occ`` key to ``first_name.occ surname``."""
     raw = raw.strip()
     if not raw:
         return ""
@@ -57,12 +53,6 @@ def person_key_of_field(raw):
     occ = (parts[-1].strip() or "0") if len(parts) >= 3 else "0"
     sn = " ".join(p.strip() for p in parts[1:-1]) if len(parts) >= 3 else parts[1].strip()
     return f"{fn}.{occ} {sn}"
-
-
-def key_binds(person_key):
-    """True if split_key can parse it (first name before the '.' has no space)."""
-    space, dot = person_key.find(" "), person_key.find(".")
-    return not (space != -1 and (dot == -1 or space < dot))
 
 
 def parse_auth_file(path, role):
@@ -162,13 +152,6 @@ def main():
 
     if not users:
         print("warning: no users parsed from the given files", file=sys.stderr)
-    for u in users:
-        if u["person_key"] and not key_binds(u["person_key"]):
-            print(
-                f'warning: {u["login"]}: person key {u["person_key"]!r} has a '
-                "multi-word first name; GeneWeb's split_key cannot bind it",
-                file=sys.stderr,
-            )
 
     with open(args.template, encoding="utf-8") as fh:
         realm = json.load(fh)
