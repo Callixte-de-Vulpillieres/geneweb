@@ -15,9 +15,20 @@ let login_cookie_name base_file = "__Host-gw_oidc_login_" ^ base_file
 let login_cookie_sig secret ~base_file ~state ~nonce ~verifier ~exp =
   let msg =
     String.concat "\000"
-      [ base_file; state; nonce; verifier; string_of_int exp ]
+      [
+        "gw-oidc-login-v1"; base_file; state; nonce; verifier; string_of_int exp;
+      ]
   in
   Digestif.SHA256.(to_hex (hmac_string ~key:secret msg))
+
+(* constant-time HMAC comparison *)
+let sig_ok expected_hex provided_hex =
+  match Digestif.SHA256.of_hex_opt provided_hex with
+  | None -> false
+  | Some provided -> (
+      match Digestif.SHA256.of_hex_opt expected_hex with
+      | Some expected -> Digestif.SHA256.equal provided expected
+      | None -> false)
 
 let make_login_cookie secret ~base_file ~state ~nonce ~verifier ~exp =
   let s = login_cookie_sig secret ~base_file ~state ~nonce ~verifier ~exp in
@@ -28,8 +39,9 @@ let parse_login_cookie secret ~base_file value =
   | [ state; nonce; verifier; exp_s; s ] -> (
       match int_of_string_opt exp_s with
       | Some exp
-        when String.equal s
+        when sig_ok
                (login_cookie_sig secret ~base_file ~state ~nonce ~verifier ~exp)
+               s
              && float_of_int exp >= Unix.time () ->
           Some (state, nonce, verifier)
       | _ -> None)
@@ -39,7 +51,8 @@ let parse_login_cookie secret ~base_file value =
    base64url(base|acc|user|username|exp) plus an HMAC keyed by secret_salt. *)
 
 let session_cookie_sig secret payload =
-  Digestif.SHA256.(to_hex (hmac_string ~key:secret payload))
+  Digestif.SHA256.(
+    to_hex (hmac_string ~key:secret ("gw-oidc-sess-v1\000" ^ payload)))
 
 let make_session_cookie secret ~base_file ~acc ~user ~username ~exp =
   let payload =
@@ -51,7 +64,7 @@ let make_session_cookie secret ~base_file ~acc ~user ~username ~exp =
 
 let parse_session_cookie secret ~base_file value =
   match String.split_on_char '.' value with
-  | [ payload; s ] when String.equal s (session_cookie_sig secret payload) -> (
+  | [ payload; s ] when sig_ok (session_cookie_sig secret payload) s -> (
       match Geneweb_oidc.Oidc.base64url_decode payload with
       | Ok raw -> (
           match String.split_on_char '\000' raw with
@@ -86,9 +99,11 @@ let extract_oidc_cookie request cookie_name =
     find pairs
 
 let cookie_access ~secret request base_name =
-  match extract_oidc_cookie request (session_cookie_name base_name) with
-  | None -> None
-  | Some v -> parse_session_cookie secret ~base_file:base_name v
+  if secret = "" then None
+  else
+    match extract_oidc_cookie request (session_cookie_name base_name) with
+    | None -> None
+    | Some v -> parse_session_cookie secret ~base_file:base_name v
 
 type oidc_config = {
   provider_url : string;
@@ -111,6 +126,25 @@ let curl_available () =
       String.split_on_char sep path
       |> List.exists (fun dir ->
           dir <> "" && Sys.file_exists (Filename.concat dir exe))
+
+let enabled base_env =
+  match List.assoc_opt "oidc_provider_url" base_env with
+  | Some url -> url <> ""
+  | None -> false
+
+let missing_required_keys base_env =
+  let present k =
+    match List.assoc_opt k base_env with Some v -> v <> "" | None -> false
+  in
+  let has_secret =
+    present "oidc_client_secret" || present "oidc_client_secret_file"
+  in
+  List.filter
+    (fun k ->
+      match k with
+      | "oidc_client_secret" -> not has_secret
+      | k -> not (present k))
+    [ "oidc_client_id"; "oidc_client_secret"; "oidc_redirect_uri" ]
 
 let read_oidc_config base_env =
   match List.assoc_opt "oidc_provider_url" base_env with
@@ -199,37 +233,49 @@ let clear_login_cookie conf base_file =
 
 let send_redirect conf url =
   Output.header conf "Location: %s" url;
+  (* empty body terminates the header block (bare headers do not) *)
+  Output.header conf "Content-Length: 0";
   Output.print_sstring conf "";
   Output.flush conf
 
 let handle_oidc_login conf base_env base_file =
   match (conf_secret conf, read_oidc_config base_env) with
   | "", _ -> oidc_error_page conf "OIDC unavailable: no secret salt configured"
-  | _, None -> oidc_error_page conf "OIDC not configured for this base"
+  | _, None ->
+      if enabled base_env then
+        oidc_error_page conf
+          ("OIDC is enabled but incomplete, missing: "
+          ^ String.concat ", " (missing_required_keys base_env))
+      else oidc_error_page conf "OIDC not configured for this base"
   | _, Some cfg -> (
       match Geneweb_oidc.Oidc.discover cfg.provider_url with
       | Error e ->
           oidc_error_page conf
             (Format.asprintf "%a" Geneweb_oidc.Oidc.pp_error e)
-      | Ok provider ->
-          let state = Geneweb_oidc.Oidc.generate_state () in
-          let nonce = Geneweb_oidc.Oidc.generate_nonce () in
-          let verifier = Geneweb_oidc.Oidc.generate_code_verifier () in
-          let exp = int_of_float (Unix.time ()) + 600 in
-          let cookie =
-            make_login_cookie (conf_secret conf) ~base_file ~state ~nonce
-              ~verifier ~exp
-          in
-          let url =
-            Geneweb_oidc.Oidc.authorization_url provider
-              ~client_id:cfg.client_id ~redirect_uri:cfg.redirect_uri ~state
-              ~nonce
-              ~code_challenge:(Geneweb_oidc.Oidc.code_challenge verifier)
-          in
-          Log.info (fun k -> k "login initiated: base=%s" base_file);
-          Output.status conf Code.Moved_Temporarily;
-          set_login_cookie conf base_file cookie;
-          send_redirect conf url)
+      | Ok provider -> (
+          match
+            ( Geneweb_oidc.Oidc.generate_state (),
+              Geneweb_oidc.Oidc.generate_nonce (),
+              Geneweb_oidc.Oidc.generate_code_verifier () )
+          with
+          | exception (Sys_error _ | End_of_file) ->
+              oidc_error_page conf "OIDC unavailable: no CSPRNG (/dev/urandom)"
+          | state, nonce, verifier ->
+              let exp = int_of_float (Unix.time ()) + 600 in
+              let cookie =
+                make_login_cookie (conf_secret conf) ~base_file ~state ~nonce
+                  ~verifier ~exp
+              in
+              let url =
+                Geneweb_oidc.Oidc.authorization_url provider
+                  ~client_id:cfg.client_id ~redirect_uri:cfg.redirect_uri ~state
+                  ~nonce
+                  ~code_challenge:(Geneweb_oidc.Oidc.code_challenge verifier)
+              in
+              Log.info (fun k -> k "login initiated: base=%s" base_file);
+              Output.status conf Code.Moved_Temporarily;
+              set_login_cookie conf base_file cookie;
+              send_redirect conf url))
 
 let handle_oidc_callback conf base_env from_addr base_file =
   let ( let* ) = Result.bind in
@@ -325,6 +371,11 @@ let handle_oidc_callback conf base_env from_addr base_file =
     let username =
       if person_key <> "" then display_name ^ "|" ^ person_key else display_name
     in
+    let* () =
+      if String.contains claim_value '\000' || String.contains username '\000'
+      then Error "claim value contains a NUL byte"
+      else Ok ()
+    in
     Ok (acc, claim_value, username)
   in
   let base_url =
@@ -355,14 +406,18 @@ let handle_oidc_callback conf base_env from_addr base_file =
         ~value:cookie ~max_age:(Some !Cmd_legacy.login_timeout);
       send_redirect conf base_url
 
-let request_is_post request = Mutil.extract_param "GET " ' ' request = ""
+let request_is_post request = Mutil.extract_param "POST " ' ' request <> ""
 
 let handle_oidc_logout conf base_env _from_addr base_file =
   let base_url =
     if !Server.cgi then conf.command ^ "?b=" ^ base_file else base_file
   in
-  (* logout must be POST so a cross-site GET cannot trigger it (CSRF) *)
-  if not (request_is_post conf.request) then begin
+  (* SameSite=Lax keeps the session cookie off cross-site POSTs (CSRF) *)
+  let has_session =
+    Option.is_some
+      (cookie_access ~secret:(conf_secret conf) conf.request base_file)
+  in
+  if not (has_session && request_is_post conf.request) then begin
     Output.status conf Code.Moved_Temporarily;
     send_redirect conf base_url
   end
@@ -394,9 +449,9 @@ let handle_mode conf mode =
   and from_addr = conf.from
   and base_file = conf.bname in
   match mode with
-  (* OIDC needs a CSPRNG (/dev/urandom); it is available only on UNIX *)
-  | Some ("OIDC_LOGIN" | "OIDC_CALLBACK" | "OIDC_LOGOUT") when not Sys.unix ->
-      oidc_error_page conf "OIDC is available only on UNIX";
+  (* refused on native Windows; Cygwin has /dev/urandom *)
+  | Some ("OIDC_LOGIN" | "OIDC_CALLBACK" | "OIDC_LOGOUT") when Sys.win32 ->
+      oidc_error_page conf "OIDC is not available on Windows";
       true
   | Some "OIDC_LOGIN" ->
       handle_oidc_login conf base_env base_file;

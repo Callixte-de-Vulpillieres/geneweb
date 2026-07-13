@@ -848,11 +848,7 @@ let basic_authorization from_addr request base_env passwd access_type utm
   let uauth = if passwd = "w" || passwd = "f" then passwd1 else passwd in
   let auto = Mutil.extract_param "gw-connection-type: " '\r' request in
   let uauth = if auto = "auto" then passwd1 else uauth in
-  let oidc_configured =
-    match List.assoc_opt "oidc_provider_url" base_env with
-    | Some url -> url <> ""
-    | None -> false
-  in
+  let oidc_configured = Gwd_oidc.enabled base_env in
   let ok, wizard, friend, username =
     if (not !Server.cgi) && (passwd = "w" || passwd = "f") then
       if passwd = "w" then
@@ -2031,7 +2027,12 @@ let null_reopen flags fd =
    If the [random] argument is [false], the salt is always the same.
    The default is [true]. *)
 let generate_secret_salt ?(random = true) () =
-  if random then Geneweb_oidc.Oidc.generate_token () else ""
+  if not random then ""
+  else
+    try Geneweb_oidc.Oidc.generate_token ()
+    with Sys_error _ | End_of_file ->
+      Random.self_init ();
+      string_of_int (Random.bits ())
 
 let retrieve_secret_salt () =
   match Unix.getenv "SECRET_SALT" with

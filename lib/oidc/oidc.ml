@@ -28,7 +28,9 @@ let read_all ic =
   Buffer.contents buf
 
 let curl_get url =
-  let argv = [| "curl"; "-sfS"; "--max-time"; "10"; url |] in
+  let argv =
+    [| "curl"; "-sfS"; "--connect-timeout"; "5"; "--max-time"; "10"; url |]
+  in
   let ic = Unix.open_process_args_in "curl" argv in
   let body = read_all ic in
   match Unix.close_process_in ic with
@@ -53,6 +55,8 @@ let curl_post url form_data =
     [|
       "curl";
       "-sS";
+      "--connect-timeout";
+      "5";
       "--max-time";
       "10";
       "-X";
@@ -63,8 +67,11 @@ let curl_post url form_data =
     |]
   in
   let ic, oc = Unix.open_process_args "curl" argv in
-  output_string oc body;
-  close_out oc;
+  (* curl may close stdin early; let close_process report the real error *)
+  (try
+     output_string oc body;
+     close_out oc
+   with Sys_error _ -> ());
   let resp = read_all ic in
   match Unix.close_process (ic, oc) with
   | Unix.WEXITED 0 -> Ok resp
@@ -104,34 +111,92 @@ let base64url_decode s =
 let base64url_encode s =
   Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet s
 
-let discover issuer_url =
-  let base =
-    if
-      String.length issuer_url > 0
-      && issuer_url.[String.length issuer_url - 1] = '/'
-    then String.sub issuer_url 0 (String.length issuer_url - 1)
-    else issuer_url
+let strip_trailing_slash s =
+  let n = String.length s in
+  if n > 0 && s.[n - 1] = '/' then String.sub s 0 (n - 1) else s
+
+let is_loopback_host host =
+  let host = String.lowercase_ascii host in
+  host = "localhost" || host = "127.0.0.1" || host = "::1" || host = "[::1]"
+  || (String.length host >= 4 && String.sub host 0 4 = "127.")
+
+(* https, or http only for loopback (local dev) *)
+let is_secure_url url =
+  let has_prefix p =
+    String.length url >= String.length p
+    && String.sub url 0 (String.length p) = p
   in
-  let url = base ^ "/.well-known/openid-configuration" in
-  Result.bind (curl_get url) (fun body ->
-      try
-        let json = Yojson.Safe.from_string body in
-        Result.bind (json_string_field "issuer" json) (fun issuer ->
-            Result.bind (json_string_field "authorization_endpoint" json)
-              (fun authorization_endpoint ->
-                Result.bind (json_string_field "token_endpoint" json)
-                  (fun token_endpoint ->
-                    let end_session_endpoint =
-                      json_string_field_opt "end_session_endpoint" json
-                    in
-                    Ok
-                      {
-                        issuer;
-                        authorization_endpoint;
-                        token_endpoint;
-                        end_session_endpoint;
-                      })))
-      with Yojson.Json_error msg -> Error (Json_error msg))
+  if has_prefix "https://" then true
+  else if has_prefix "http://" then
+    let rest = String.sub url 7 (String.length url - 7) in
+    let host =
+      match String.index_opt rest '/' with
+      | Some i -> String.sub rest 0 i
+      | None -> rest
+    in
+    let host =
+      if String.length host > 0 && host.[0] = '[' then
+        match String.index_opt host ']' with
+        | Some j -> String.sub host 0 (j + 1)
+        | None -> host
+      else
+        match String.index_opt host ':' with
+        | Some i -> String.sub host 0 i
+        | None -> host
+    in
+    is_loopback_host host
+  else false
+
+let discover issuer_url =
+  let base = strip_trailing_slash issuer_url in
+  if not (is_secure_url base) then
+    Error
+      (Http_error
+         (Printf.sprintf "oidc_provider_url must be https (got %s)" base))
+  else
+    let url = base ^ "/.well-known/openid-configuration" in
+    Result.bind (curl_get url) (fun body ->
+        try
+          let json = Yojson.Safe.from_string body in
+          Result.bind (json_string_field "issuer" json) (fun issuer ->
+              Result.bind (json_string_field "authorization_endpoint" json)
+                (fun authorization_endpoint ->
+                  Result.bind (json_string_field "token_endpoint" json)
+                    (fun token_endpoint ->
+                      if strip_trailing_slash issuer <> base then
+                        Error
+                          (Http_error
+                             (Printf.sprintf
+                                "issuer mismatch: discovery returned %s, \
+                                 expected %s"
+                                issuer base))
+                      else if not (is_secure_url authorization_endpoint) then
+                        Error
+                          (Http_error
+                             (Printf.sprintf
+                                "authorization_endpoint is not https: %s"
+                                authorization_endpoint))
+                      else if not (is_secure_url token_endpoint) then
+                        Error
+                          (Http_error
+                             (Printf.sprintf "token_endpoint is not https: %s"
+                                token_endpoint))
+                      else
+                        let end_session_endpoint =
+                          match
+                            json_string_field_opt "end_session_endpoint" json
+                          with
+                          | Some e when is_secure_url e -> Some e
+                          | _ -> None
+                        in
+                        Ok
+                          {
+                            issuer;
+                            authorization_endpoint;
+                            token_endpoint;
+                            end_session_endpoint;
+                          })))
+        with Yojson.Json_error msg -> Error (Json_error msg))
 
 let authorization_url provider ~client_id ~redirect_uri ~state ~nonce
     ~code_challenge =
@@ -256,16 +321,18 @@ let validate_claims ~client_id ~issuer ~nonce claims =
     match json_at_path claims "aud" with
     | None -> Error (Jwt_error "missing aud claim")
     | Some aud ->
+        let azp = claim_string claims "azp" in
+        let multi_aud =
+          match aud with `List (_ :: _ :: _) -> true | _ -> false
+        in
         if not (claim_has_value claims ~path:"aud" ~value:client_id) then
           Error
             (Jwt_error
                (Printf.sprintf "aud does not contain client_id %s" client_id))
-        else if
-          (* with multiple audiences OIDC requires azp = client_id *)
-          (match aud with `List (_ :: _ :: _) -> true | _ -> false)
-          && claim_string claims "azp" <> Some client_id
-        then
-          Error (Jwt_error "azp must equal client_id when aud is multi-valued")
+        else if match azp with Some a -> a <> client_id | None -> false then
+          Error (Jwt_error "azp does not equal client_id")
+        else if multi_aud && azp = None then
+          Error (Jwt_error "azp required when aud is multi-valued")
         else Ok ()
   in
 
@@ -312,18 +379,15 @@ let logout_url provider ~client_id ~post_logout_redirect_uri =
       let uri = Uri.add_query_params' base params in
       Some (Uri.to_string uri)
 
-(* CSPRNG from /dev/urandom; falls back to a weaker PRNG only where it is
-   absent (e.g. Windows), which is not a target OIDC deployment. *)
+(* CSPRNG from /dev/urandom; fails closed (raises) if unavailable *)
 let random_bytes len =
-  try
-    let ic = open_in_bin "/dev/urandom" in
-    let b = Bytes.create len in
-    really_input ic b 0 len;
-    close_in ic;
-    Bytes.to_string b
-  with Sys_error _ ->
-    Random.self_init ();
-    String.init len (fun _ -> Char.chr (Random.int 256))
+  let ic = open_in_bin "/dev/urandom" in
+  Fun.protect
+    ~finally:(fun () -> close_in_noerr ic)
+    (fun () ->
+      let b = Bytes.create len in
+      really_input ic b 0 len;
+      Bytes.to_string b)
 
 let generate_random_hex len =
   let hex = Buffer.create (len * 2) in
