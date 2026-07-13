@@ -62,11 +62,13 @@ docker run --rm --name gw-kc -p 8080:8080 \
 sudo caddy run --config oidc-e2e/Caddyfile
 ```
 
-Test users (defined in `oidc-e2e/keycloak-realm.json`):
+Test users (defined in `oidc-e2e/keycloak-realm.json`). `galichet.gwf` uses
+`oidc_user_claim=geneweb_login`, so the identity is the login carried by the
+`geneweb_login` claim (not the email):
 
 | User | Password | Role | Person key | Result |
 |------|----------|------|-----------|--------|
-| `alice` | `alice` | `geneweb-wizard` | `Jean Pierre.0 Galichet` | **wizard**, linked to that individual |
+| `alice` | `alice` | `geneweb-wizard` | `Paul.0 Galichet` | **wizard**, linked to that individual |
 | `bob` | `bob` | `geneweb-friend` | _(none)_ | **friend** |
 | _(any user with no matching role)_ | | | | **visitor** (no session, sees public data) |
 
@@ -77,8 +79,8 @@ Test users (defined in `oidc-e2e/keycloak-realm.json`):
 2. Click it → the Keycloak login page.
 3. Log in as **alice / alice** → back on the welcome page as a **wizard**
    (identity + a *disconnect* button). Because the id_token carries the person
-   key, alice's name links to the individual **Jean Pierre Galichet**
-   (`m=S&pn=...`); **bob** (no key) shows no such link.
+   key, alice's name links to the individual **Paul Galichet** (`m=S&pn=...`);
+   **bob** (no key) shows no such link.
 4. Click **disconnect** (POST) → the session cookie is cleared and you are sent
    through the provider's logout.
 5. Repeat with **bob / bob** for **friend** access, or a role-less user for

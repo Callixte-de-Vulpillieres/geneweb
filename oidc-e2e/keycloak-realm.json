@@ -16,7 +16,10 @@
       "emailVerified": true,
       "firstName": "Alice",
       "lastName": "Wizard",
-      "attributes": { "geneweb_person_key": ["Jean Pierre.0 Galichet"] },
+      "attributes": {
+        "geneweb_login": ["alice"],
+        "geneweb_person_key": ["Paul.0 Galichet"]
+      },
       "credentials": [{ "type": "password", "value": "alice", "temporary": false }],
       "realmRoles": ["geneweb-wizard"]
     },
@@ -27,6 +30,7 @@
       "emailVerified": true,
       "firstName": "Bob",
       "lastName": "Friend",
+      "attributes": { "geneweb_login": ["bob"] },
       "credentials": [{ "type": "password", "value": "bob", "temporary": false }],
       "realmRoles": ["geneweb-friend"]
     }
@@ -70,6 +74,20 @@
           "config": {
             "user.attribute": "geneweb_person_key",
             "claim.name": "geneweb_person_key",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "geneweb login in id token",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "geneweb_login",
+            "claim.name": "geneweb_login",
             "jsonType.label": "String",
             "id.token.claim": "true",
             "access.token.claim": "true",
