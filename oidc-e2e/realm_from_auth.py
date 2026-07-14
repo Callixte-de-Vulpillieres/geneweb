@@ -96,6 +96,27 @@ def sanitize_username(login):
     return re.sub(r"\s+", ".", login.strip().lower())
 
 
+def dedup_users(users):
+    """Merge only entries with the exact same login (the same person listed in
+    several files), unioning their roles. Distinct logins are never merged."""
+    by_login = {}
+    order = []
+    for u in users:
+        key = u["login"]
+        if key not in by_login:
+            by_login[key] = {**u, "roles": [u["role"]]}
+            order.append(key)
+        else:
+            m = by_login[key]
+            if u["role"] not in m["roles"]:
+                m["roles"].append(u["role"])
+            if not m["person_key"] and u["person_key"]:
+                m["person_key"] = u["person_key"]
+            if not m["display"] and u["display"]:
+                m["display"] = u["display"]
+    return [by_login[k] for k in order]
+
+
 def to_keycloak_user(u, email_domain):
     handle = sanitize_username(u["login"])
     attrs = {"geneweb_login": [u["login"]]}
@@ -111,7 +132,7 @@ def to_keycloak_user(u, email_domain):
         "credentials": [
             {"type": "password", "value": u["password"], "temporary": False}
         ],
-        "realmRoles": [u["role"]],
+        "realmRoles": u["roles"],
         "attributes": attrs,
     }
 
@@ -153,9 +174,27 @@ def main():
     if not users:
         print("warning: no users parsed from the given files", file=sys.stderr)
 
+    users = dedup_users(users)
+    kc_users = [to_keycloak_user(u, args.email_domain) for u in users]
+
+    # distinct logins that collapse to the same Keycloak username would be
+    # rejected on import; warn instead of silently merging different people.
+    seen = {}
+    for ku in kc_users:
+        name = ku["username"]
+        login = ku["attributes"]["geneweb_login"][0]
+        if name in seen and seen[name] != login:
+            print(
+                f"warning: logins {seen[name]!r} and {login!r} both map to the "
+                f"Keycloak username {name!r}; Keycloak will reject the duplicate",
+                file=sys.stderr,
+            )
+        else:
+            seen[name] = login
+
     with open(args.template, encoding="utf-8") as fh:
         realm = json.load(fh)
-    realm["users"] = [to_keycloak_user(u, args.email_domain) for u in users]
+    realm["users"] = kc_users
 
     text = json.dumps(realm, indent=2, ensure_ascii=False) + "\n"
     if args.out:
