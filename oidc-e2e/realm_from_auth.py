@@ -16,9 +16,13 @@ This turns each entry into a Keycloak user so the same people can sign in over
 OIDC. It loads an existing realm JSON as a template
 (``oidc-e2e/keycloak-realm.json`` by default) and only replaces its ``users``
 array, so the client, roles and protocol mappers stay in sync. Each user gets:
+  * the legacy login as its Keycloak username, kept verbatim (case, spaces,
+    special characters). Legacy auth lets different people share a login
+    (disambiguated by password/person), which Keycloak forbids, so distinct
+    people sharing a login are suffixed: philippe, philippe2, philippe3 ...
   * a password credential and the matching realm role (geneweb-wizard/-friend);
-  * ``geneweb_login`` = the exact legacy login, so a base can keep using it as
-    its identity (``oidc_user_claim=geneweb_login``) and preserve ``manitou`` /
+  * ``geneweb_login`` = the original login (no suffix), so a base uses it as
+    identity (``oidc_user_claim=geneweb_login``) and preserves ``manitou`` /
     ``supervisor`` / ``superwizard`` matching;
   * ``geneweb_person_key`` = the key converted to ``first_name.occ surname``
     (resolved by GeneWeb's dot-key parser), when the entry carries one;
@@ -31,7 +35,6 @@ Example:
 
 import argparse
 import json
-import re
 import sys
 
 
@@ -92,41 +95,56 @@ def parse_auth_file(path, role):
     return users
 
 
-def sanitize_username(login):
-    return re.sub(r"\s+", ".", login.strip().lower())
-
-
-def dedup_users(users):
-    """Merge only entries with the exact same login (the same person listed in
-    several files), unioning their roles. Distinct logins are never merged."""
-    by_login = {}
+def merge_accounts(users):
+    """Merge rows that are the same account -- same login, password and person
+    key (the same person listed in both the wizard and friend files) -- unioning
+    their roles. Different people who happen to share a login stay separate;
+    legacy auth distinguishes them by password/person, not by the login alone."""
+    by_id = {}
     order = []
     for u in users:
-        key = u["login"]
-        if key not in by_login:
-            by_login[key] = {**u, "roles": [u["role"]]}
+        key = (u["login"], u["password"], u["person_key"])
+        if key not in by_id:
+            by_id[key] = {**u, "roles": [u["role"]]}
             order.append(key)
         else:
-            m = by_login[key]
+            m = by_id[key]
             if u["role"] not in m["roles"]:
                 m["roles"].append(u["role"])
-            if not m["person_key"] and u["person_key"]:
-                m["person_key"] = u["person_key"]
             if not m["display"] and u["display"]:
                 m["display"] = u["display"]
-    return [by_login[k] for k in order]
+    return [by_id[k] for k in order]
 
 
-def to_keycloak_user(u, email_domain):
-    handle = sanitize_username(u["login"])
+def assign_usernames(accounts):
+    """Set each account's Keycloak username to its login kept verbatim (case,
+    spaces, special characters). When distinct accounts share a login, keep the
+    first as-is and suffix the rest (philippe, philippe2, philippe3 ...),
+    avoiding collisions with any other real login."""
+    logins = {a["login"] for a in accounts}
+    used = set()
+    for a in accounts:
+        base = a["login"]
+        name = base
+        if name in used:
+            i = 2
+            while f"{base}{i}" in used or f"{base}{i}" in logins:
+                i += 1
+            name = f"{base}{i}"
+        used.add(name)
+        a["username"] = name
+    return accounts
+
+
+def to_keycloak_user(u):
+    # geneweb_login stays the original login (no suffix) for GeneWeb's identity;
+    # only the Keycloak username may be suffixed to stay unique.
     attrs = {"geneweb_login": [u["login"]]}
     if u["person_key"]:
         attrs["geneweb_person_key"] = [u["person_key"]]
     return {
-        "username": handle,
+        "username": u["username"],
         "enabled": True,
-        "email": f"{handle}@{email_domain}",
-        "emailVerified": True,
         "firstName": u["display"] or u["login"],
         "lastName": "",
         "credentials": [
@@ -154,10 +172,6 @@ def main():
         help="realm JSON to use as a base (default: oidc-e2e/keycloak-realm.json)",
     )
     parser.add_argument(
-        "--email-domain", default="example.local", metavar="DOMAIN",
-        help="domain for the synthesized user emails (default: example.local)",
-    )
-    parser.add_argument(
         "--out", metavar="FILE", help="output file (default: stdout)"
     )
     args = parser.parse_args()
@@ -174,23 +188,16 @@ def main():
     if not users:
         print("warning: no users parsed from the given files", file=sys.stderr)
 
-    users = dedup_users(users)
-    kc_users = [to_keycloak_user(u, args.email_domain) for u in users]
-
-    # distinct logins that collapse to the same Keycloak username would be
-    # rejected on import; warn instead of silently merging different people.
-    seen = {}
-    for ku in kc_users:
-        name = ku["username"]
-        login = ku["attributes"]["geneweb_login"][0]
-        if name in seen and seen[name] != login:
+    users = merge_accounts(users)
+    users = assign_usernames(users)
+    for u in users:
+        if u["username"] != u["login"]:
             print(
-                f"warning: logins {seen[name]!r} and {login!r} both map to the "
-                f"Keycloak username {name!r}; Keycloak will reject the duplicate",
+                f"note: login {u['login']!r} is shared; person "
+                f"{u['person_key'] or '?'} gets username {u['username']!r}",
                 file=sys.stderr,
             )
-        else:
-            seen[name] = login
+    kc_users = [to_keycloak_user(u) for u in users]
 
     with open(args.template, encoding="utf-8") as fh:
         realm = json.load(fh)
