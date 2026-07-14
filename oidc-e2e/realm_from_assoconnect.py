@@ -2,9 +2,12 @@
 """Build a Keycloak realm-import JSON from an AssoConnect CSV export.
 
 The CSV is authoritative (one row per person). The GeneWeb wizard ``.auth``
-file(s) are joined on the person key only to recover the wizard *login* (absent
-from the CSV) used as ``geneweb_login`` for wizards, so their wiznotes /
-``superwizard`` / ``manitou`` keep working.
+file(s) are joined on the person key to recover the wizard *login* (absent from
+the CSV) used as ``geneweb_login`` for wizards, so their wiznotes /
+``superwizard`` / ``manitou`` keep working. Both the wizard and friend ``.auth``
+files are also cross-checked against the CSV: every field present on both sides
+(wizard name; AMI login, password and person key) is compared and any
+divergence -- or an entry present in one source but not the other -- is warned.
 
 Per row -> one Keycloak account:
   * username = ``identifiant AMI`` kept verbatim, numeric-suffixed on collision;
@@ -106,8 +109,9 @@ def auth_person_key(field4, name):
 
 
 def parse_auth(path):
-    """person_key -> (login, raw field-3 name) from a GeneWeb wizard .auth file."""
-    out = {}
+    """Parse a GeneWeb .auth file into a list of entries with all fields:
+    login, password, name (raw field 3), person_key (from field 4 or name|key)."""
+    entries = []
     with open(path, encoding="utf-8") as fh:
         for line in fh:
             line = line.rstrip("\r\n")
@@ -116,21 +120,42 @@ def parse_auth(path):
             parts = line.split(":", 2)
             if len(parts) < 2 or not parts[0]:
                 continue
-            login, info = parts[0], (parts[2] if len(parts) == 3 else "")
+            login, password = parts[0], parts[1]
+            info = parts[2] if len(parts) == 3 else ""
             name, field4 = info, ""
             if ":" in info:
                 name, rest = info.split(":", 1)
                 field4 = rest.split(":", 1)[0]
-            pk = auth_person_key(field4, name)
-            if pk:
-                if pk in out and out[pk][0] != login:
-                    print(
-                        f"warning: .auth has two logins for person {pk!r}: "
-                        f"{out[pk][0]!r} and {login!r}",
-                        file=sys.stderr,
-                    )
-                out[pk] = (login, name)
-    return out
+            entries.append(
+                {
+                    "login": login,
+                    "password": password,
+                    "name": name,
+                    "person_key": auth_person_key(field4, name),
+                }
+            )
+    return entries
+
+
+def index_by_pk(entries, kind):
+    d = {}
+    for e in entries:
+        pk = e["person_key"]
+        if not pk:
+            print(
+                f"warning: {kind} .auth entry {e['login']!r} has no person key; "
+                "cannot cross-check it",
+                file=sys.stderr,
+            )
+            continue
+        if pk in d and d[pk]["login"] != e["login"]:
+            print(
+                f"warning: {kind} .auth has two logins for person {pk!r}: "
+                f"{d[pk]['login']!r} and {e['login']!r}",
+                file=sys.stderr,
+            )
+        d[pk] = e
+    return d
 
 
 def main():
@@ -140,7 +165,13 @@ def main():
     ap.add_argument("--csv", required=True, metavar="FILE")
     ap.add_argument(
         "--wizard", action="append", default=[], metavar="FILE",
-        help="GeneWeb wizard .auth file, joined for the wizard login (repeatable)",
+        help="GeneWeb wizard .auth file (repeatable): join for the wizard login "
+        "and cross-check overlapping fields",
+    )
+    ap.add_argument(
+        "--friend", action="append", default=[], metavar="FILE",
+        help="GeneWeb friend .auth file (repeatable): cross-check AMI login, "
+        "password and person key against the CSV",
     )
     ap.add_argument(
         "--template", default="oidc-e2e/keycloak-realm.json", metavar="FILE"
@@ -152,10 +183,14 @@ def main():
     )
     args = ap.parse_args()
 
-    auth = {}
-    for path in args.wizard:
-        auth.update(parse_auth(path))
-    auth_used = set()
+    wiz_entries = [e for p in args.wizard for e in parse_auth(p)]
+    frd_entries = [e for p in args.friend for e in parse_auth(p)]
+    wiz_by_pk = index_by_pk(wiz_entries, "wizard")
+    frd_by_pk = index_by_pk(frd_entries, "friend")
+    frd_by_login = {}
+    for e in frd_entries:
+        frd_by_login.setdefault(e["login"], []).append(e)
+    wiz_used, frd_used = set(), set()
 
     with open(args.csv, encoding="utf-8-sig", newline="") as fh:
         reader = csv.DictReader(fh)
@@ -193,22 +228,54 @@ def main():
 
         geneweb_login = ami
         if is_wizard:
-            match = auth.get(pk)
-            if match is None:
+            e = wiz_by_pk.get(pk)
+            if e is None:
                 print(
                     f"warning: wizard {ami!r} (person {pk!r}) has no matching "
-                    ".auth entry; using AMI login as geneweb_login",
+                    "wizard .auth entry; using AMI login as geneweb_login",
                     file=sys.stderr,
                 )
             else:
-                auth_used.add(pk)
-                geneweb_login = match[0]
-                if col(row, "nom_magicien") and match[1] and col(
-                    row, "nom_magicien"
-                ) != match[1]:
+                wiz_used.add(pk)
+                geneweb_login = e["login"]
+                nm = col(row, "nom_magicien")
+                if nm and e["name"] and nm != e["name"]:
                     print(
-                        f"warning: wizard name differs for {pk!r}: CSV "
-                        f"{col(row, 'nom_magicien')!r} vs .auth {match[1]!r}",
+                        f"warning: wizard name differs for {pk!r}: CSV {nm!r} "
+                        f"vs wizard .auth {e['name']!r}",
+                        file=sys.stderr,
+                    )
+
+        if is_friend and (frd_by_pk or frd_by_login):
+            e = frd_by_pk.get(pk)
+            if e is not None:
+                frd_used.add(e["person_key"])
+            else:
+                cands = frd_by_login.get(ami, [])
+                if cands:
+                    e = cands[0]
+                    frd_used.add(e["person_key"])
+                    print(
+                        f"warning: person key differs for AMI login {ami!r}: CSV "
+                        f"{pk!r} vs friend .auth {e['person_key']!r}",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"warning: friend {ami!r} (person {pk!r}) not found in "
+                        "friend .auth",
+                        file=sys.stderr,
+                    )
+            if e is not None:
+                if e["login"] != ami:
+                    print(
+                        f"warning: AMI login differs for person {pk!r}: CSV "
+                        f"{ami!r} vs friend .auth {e['login']!r}",
+                        file=sys.stderr,
+                    )
+                if e["password"] != col(row, "ami_pw"):
+                    print(
+                        f"warning: AMI password differs for {ami!r} (person {pk!r})",
                         file=sys.stderr,
                     )
 
@@ -236,10 +303,16 @@ def main():
             }
         )
 
-    for pk in set(auth) - auth_used:
+    for pk in set(wiz_by_pk) - wiz_used:
         print(
-            f"warning: .auth wizard {auth[pk][0]!r} (person {pk!r}) has no "
-            "matching CSV row",
+            f"warning: wizard .auth {wiz_by_pk[pk]['login']!r} (person {pk!r}) "
+            "has no matching CSV row",
+            file=sys.stderr,
+        )
+    for pk in set(frd_by_pk) - frd_used:
+        print(
+            f"warning: friend .auth {frd_by_pk[pk]['login']!r} (person {pk!r}) "
+            "has no matching CSV row",
             file=sys.stderr,
         )
 
