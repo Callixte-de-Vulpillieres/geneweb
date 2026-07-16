@@ -45,6 +45,14 @@ def norm(s):
     return s.lower().replace("\u2019", "'").strip()
 
 
+def crush(s):
+    """GeneWeb-like key normalization for comparison/join: drop accents, case
+    and all whitespace, so "Ansart de Lessan" == "AnsartdeLessan"."""
+    s = unicodedata.normalize("NFKD", s or "")
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return "".join(s.split()).lower()
+
+
 def attr_key(header):
     k = re.sub(r"[^a-z0-9]+", "_", norm(header)).strip("_")
     return k
@@ -138,23 +146,24 @@ def parse_auth(path):
 
 
 def index_by_pk(entries, kind):
+    """Index entries by the crushed person key (space/accent/case insensitive)."""
     d = {}
     for e in entries:
-        pk = e["person_key"]
-        if not pk:
+        if not e["person_key"]:
             print(
                 f"warning: {kind} .auth entry {e['login']!r} has no person key; "
                 "cannot cross-check it",
                 file=sys.stderr,
             )
             continue
-        if pk in d and d[pk]["login"] != e["login"]:
+        key = crush(e["person_key"])
+        if key in d and d[key]["login"] != e["login"]:
             print(
-                f"warning: {kind} .auth has two logins for person {pk!r}: "
-                f"{d[pk]['login']!r} and {e['login']!r}",
+                f"warning: {kind} .auth has two logins for person "
+                f"{e['person_key']!r}: {d[key]['login']!r} and {e['login']!r}",
                 file=sys.stderr,
             )
-        d[pk] = e
+        d[key] = e
     return d
 
 
@@ -228,7 +237,7 @@ def main():
 
         geneweb_login = ami
         if is_wizard:
-            e = wiz_by_pk.get(pk)
+            e = wiz_by_pk.get(crush(pk))
             if e is None:
                 print(
                     f"warning: wizard {ami!r} (person {pk!r}) has no matching "
@@ -236,10 +245,10 @@ def main():
                     file=sys.stderr,
                 )
             else:
-                wiz_used.add(pk)
+                wiz_used.add(crush(pk))
                 geneweb_login = e["login"]
                 nm = col(row, "nom_magicien")
-                if nm and e["name"] and nm != e["name"]:
+                if nm and e["name"] and crush(nm) != crush(e["name"]):
                     print(
                         f"warning: wizard name differs for {pk!r}: CSV {nm!r} "
                         f"vs wizard .auth {e['name']!r}",
@@ -247,14 +256,14 @@ def main():
                     )
 
         if is_friend and (frd_by_pk or frd_by_login):
-            e = frd_by_pk.get(pk)
+            e = frd_by_pk.get(crush(pk))
             if e is not None:
-                frd_used.add(e["person_key"])
+                frd_used.add(crush(e["person_key"]))
             else:
                 cands = frd_by_login.get(ami, [])
                 if cands:
                     e = cands[0]
-                    frd_used.add(e["person_key"])
+                    frd_used.add(crush(e["person_key"]))
                     print(
                         f"warning: person key differs for AMI login {ami!r}: CSV "
                         f"{pk!r} vs friend .auth {e['person_key']!r}",
@@ -303,15 +312,17 @@ def main():
             }
         )
 
-    for pk in set(wiz_by_pk) - wiz_used:
+    for key in set(wiz_by_pk) - wiz_used:
+        e = wiz_by_pk[key]
         print(
-            f"warning: wizard .auth {wiz_by_pk[pk]['login']!r} (person {pk!r}) "
+            f"warning: wizard .auth {e['login']!r} (person {e['person_key']!r}) "
             "has no matching CSV row",
             file=sys.stderr,
         )
-    for pk in set(frd_by_pk) - frd_used:
+    for key in set(frd_by_pk) - frd_used:
+        e = frd_by_pk[key]
         print(
-            f"warning: friend .auth {frd_by_pk[pk]['login']!r} (person {pk!r}) "
+            f"warning: friend .auth {e['login']!r} (person {e['person_key']!r}) "
             "has no matching CSV row",
             file=sys.stderr,
         )
