@@ -27,8 +27,10 @@ with none of these is skipped with a warning.
     Patronyme) as ``first_name.occ surname``;
   * geneweb_login = wizard login (joined from .auth) for wizards, else the
     resolved login;
-  * firstName/lastName/email, and every other column kept as a user attribute
-    (passwords excluded);
+  * firstName/lastName/email set as the standard fields; the only extra
+    attributes kept are the AssoConnect contact id and app id (for
+    reconciliation) -- all other columns (address, phone, birth date, family
+    links, consents, comments, assoc metadata) stay in AssoConnect, not here;
   * enabled = false when deceased or missing consent (kept, not skipped).
 
 Warnings (stderr): a Magicien with no matching .auth entry (and vice versa),
@@ -41,7 +43,6 @@ import argparse
 import csv
 import json
 import os
-import re
 import sys
 import unicodedata
 
@@ -60,14 +61,10 @@ def crush(s):
     return "".join(s.split()).lower()
 
 
-def attr_key(header):
-    k = re.sub(r"[^a-z0-9]+", "_", norm(header)).strip("_")
-    return k
-
-
 # logical field -> ("eq"|"has", needle(s)) resolved against the CSV header row
 FIELDS = {
     "contact_id": ("has", ["id du contact"]),
+    "app_id": ("eq", "appid"),
     "nom": ("eq", "nom"),
     "prenom": ("eq", "prenom"),
     "email": ("eq", "email"),
@@ -447,16 +444,21 @@ def _assign_usernames(accounts, rename_log):
 
 
 def _fill_attributes(accounts, cols):
-    # keep every column as an attribute, except passwords and the columns
-    # already mapped to reserved Keycloak fields (username/email/first/last).
-    skip = {cols.get("nom"), cols.get("prenom"), cols.get("email"), cols.get("ami_id")}
+    # Keycloak is the identity provider, not the member database: keep only what
+    # login and GeneWeb need (geneweb_login / geneweb_person_key are already set,
+    # firstName / lastName / email / username / password map to standard fields)
+    # plus two opaque AssoConnect IDs for reconciliation. Every other column --
+    # address, phone, birth date, family links, consents, comments, assoc
+    # metadata -- stays in AssoConnect and is deliberately NOT stored here.
+    extra = {
+        "assoconnect_contact_id": cols.get("contact_id"),
+        "assoconnect_app_id": cols.get("app_id"),
+    }
     for a in accounts:
-        for header, value in a["row"].items():
-            if header is None or header in skip or not (value or "").strip():
-                continue
-            if "mot de passe" in norm(header):
-                continue
-            a["attrs"].setdefault(attr_key(header), [value.strip()])
+        for attr, header in extra.items():
+            value = (a["row"].get(header) or "").strip() if header else ""
+            if value:
+                a["attrs"].setdefault(attr, [value])
 
 
 def _dedup_emails(accounts):
