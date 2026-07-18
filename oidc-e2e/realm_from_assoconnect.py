@@ -29,14 +29,15 @@ with none of these is skipped with a warning.
     resolved login;
   * groups: ``Fonction dans l'Association`` -> ``/Fonction/<value>`` (kept
     verbatim), and the ``Membres honoraires AG`` flag -> ``/Membres honoraires
-    AG``; the realm group tree is derived from the values present;
+    AG`` (both derived from the data), plus a fixed ``Équipe informatique``
+    group whose members are full realm admins (created empty);
   * firstName/lastName/email set as the standard fields; kept as attributes:
-    contact details (phones, gender, postal address, website), the sponsor
-    (parrain), the friends-directory opt-in, genealogy interests, activity,
+    contact details (phones, gender, postal address, website), birth date/place,
+    the sponsor (parrain), the friends-directory opt-in, genealogy interests,
     comments (admin-only), the two admission dates (ami / magicien, converted to
-    ISO), and the AssoConnect contact/app ids. Other columns (birth date/place,
-    family links, other assoc dates and metadata, main password, RGPD/charter
-    consents) stay in AssoConnect;
+    ISO), and the AssoConnect contact/app ids. Other columns (family links,
+    other assoc dates and metadata, main password, RGPD/charter consents) stay
+    in AssoConnect;
   * enabled = false when deceased or missing consent (kept, not skipped).
 
 Warnings (stderr): a Magicien with no matching .auth entry (and vice versa),
@@ -88,7 +89,6 @@ FIELDS = {
     "annuaire": ("has", ["annuaire des amis"]),
     "website": ("eq", "site internet"),
     "genealogy_interests": ("has", ["interet genealogique"]),
-    "activity": ("eq", "activite"),
     "comments": ("has", ["commentaires"]),
     "date_admission_ami": ("has", ["date d'admission ami"]),
     "date_admission_magicien": ("has", ["date d'admission magicien"]),
@@ -100,13 +100,22 @@ FIELDS = {
     "postal_code": ("has", ["code postal"]),
     "city": ("eq", "ville"),
     "region": ("eq", "region"),
-    "department": ("has", ["departement"]),
+    "department": ("eq", "departement"),
     "country": ("eq", "pays"),
+    "birth_date": ("has", ["date de naissance"]),
+    "birth_place": ("has", ["lieu de naissance"]),
     "deceased": ("eq", "decede"),
     "consent_keep": ("has", ["autorise la conservation"]),
     "consent_access": ("has", ["droit d'acces"]),
     "consent_cgu": ("has", ["conditions generales"]),
 }
+
+# Fixed groups added to every realm (not derived from the CSV). Members of
+# "Équipe informatique" become full realm admins via the realm-management
+# "realm-admin" composite role; it is created empty (fill it in the console).
+FIXED_GROUPS = [
+    {"name": "Équipe informatique", "clientRoles": {"realm-management": ["realm-admin"]}},
+]
 
 
 def resolve_columns(fieldnames):
@@ -402,9 +411,9 @@ def main():
 
     with open(args.template, encoding="utf-8") as fh:
         realm = json.load(fh)
-    groups = _build_groups(accounts)
-    if groups:
-        realm["groups"] = groups
+    realm["groups"] = _merge_groups(
+        realm.get("groups", []), FIXED_GROUPS, _build_groups(accounts)
+    )
     # Grant Keycloak's default composite role so imported users get the standard
     # account access (offline_access + the account client's view-profile /
     # manage-account roles, i.e. the `account` audience). Without it the account
@@ -509,8 +518,8 @@ def _fill_attributes(accounts, cols):
         "website": "website",
         "parrain": "parrain",
         "genealogy_interests": "genealogy_interests",
-        "activity": "activity",
         "comments": "comments",
+        "birth_place": "birth_place",
     }
     for a in accounts:
         row = a["row"]
@@ -525,7 +534,7 @@ def _fill_attributes(accounts, cols):
         annuaire = norm(row.get(cols.get("annuaire")) or "") if cols.get("annuaire") else ""
         if annuaire in ("oui", "non"):
             a["attrs"].setdefault("annuaire_amis", ["true" if annuaire == "oui" else "false"])
-        for attr in ("date_admission_ami", "date_admission_magicien"):
+        for attr in ("birth_date", "date_admission_ami", "date_admission_magicien"):
             h = cols.get(attr)
             raw = (row.get(h) or "").strip() if h else ""
             if not raw:
@@ -549,6 +558,30 @@ def _iso_date(raw):
         if len(parts[2]) == 4 and 1 <= m <= 12 and 1 <= d <= 31:
             return f"{y:04d}-{m:02d}-{d:02d}"
     return ""
+
+
+def _merge_groups(*group_lists):
+    """Merge several group lists by top-level name, unioning their subGroups and
+    keeping other keys (e.g. clientRoles) from later lists."""
+    by_name, order = {}, []
+    for gl in group_lists:
+        for g in gl:
+            name = g["name"]
+            if name not in by_name:
+                by_name[name] = {"name": name}
+                order.append(name)
+            dst = by_name[name]
+            for k, v in g.items():
+                if k == "subGroups":
+                    sub = dst.setdefault("subGroups", [])
+                    have = {s["name"] for s in sub}
+                    for s in v:
+                        if s["name"] not in have:
+                            sub.append(s)
+                            have.add(s["name"])
+                elif k != "name":
+                    dst[k] = v
+    return [by_name[n] for n in order]
 
 
 def _build_groups(accounts):
