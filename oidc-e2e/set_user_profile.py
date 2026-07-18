@@ -13,6 +13,7 @@ import sys
 
 BOTH = {"view": ["admin", "user"], "edit": ["admin", "user"]}
 ADMIN = {"view": ["admin"], "edit": ["admin"]}
+READONLY = {"view": ["admin", "user"], "edit": ["admin"]}  # user sees, admin edits
 
 
 def a(name, label, perms, group=None, input_type=None, options=None, maxlen=255):
@@ -64,6 +65,10 @@ PROFILE = {
           "textarea", maxlen=4000),
         a("activity", "Activité", BOTH, "roglo", maxlen=255),
         a("comments", "Commentaires", ADMIN, "roglo", "textarea", maxlen=4000),
+        a("date_admission_ami", "Date d'admission ami", READONLY, "roglo",
+          "html5-date", maxlen=10),
+        a("date_admission_magicien", "Date d'admission magicien", READONLY, "roglo",
+          "html5-date", maxlen=10),
         # internal identity keys -- admin only, never user-editable
         a("geneweb_login", "GeneWeb login", ADMIN, "roglo", maxlen=255),
         a("geneweb_person_key", "GeneWeb person key", ADMIN, "roglo", maxlen=255),

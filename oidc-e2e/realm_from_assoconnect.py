@@ -33,9 +33,10 @@ with none of these is skipped with a warning.
   * firstName/lastName/email set as the standard fields; kept as attributes:
     contact details (phones, gender, postal address, website), the sponsor
     (parrain), the friends-directory opt-in, genealogy interests, activity,
-    comments (admin-only), and the AssoConnect contact/app ids. Other columns
-    (birth date/place, family links, assoc metadata and dates, main password,
-    RGPD/charter consents) stay in AssoConnect;
+    comments (admin-only), the two admission dates (ami / magicien, converted to
+    ISO), and the AssoConnect contact/app ids. Other columns (birth date/place,
+    family links, other assoc dates and metadata, main password, RGPD/charter
+    consents) stay in AssoConnect;
   * enabled = false when deceased or missing consent (kept, not skipped).
 
 Warnings (stderr): a Magicien with no matching .auth entry (and vice versa),
@@ -89,6 +90,8 @@ FIELDS = {
     "genealogy_interests": ("has", ["interet genealogique"]),
     "activity": ("eq", "activite"),
     "comments": ("has", ["commentaires"]),
+    "date_admission_ami": ("has", ["date d'admission ami"]),
+    "date_admission_magicien": ("has", ["date d'admission magicien"]),
     "phone_mobile": ("has", ["telephone mobile"]),
     "phone_landline": ("has", ["telephone fixe"]),
     "sex": ("eq", "sexe"),
@@ -522,6 +525,30 @@ def _fill_attributes(accounts, cols):
         annuaire = norm(row.get(cols.get("annuaire")) or "") if cols.get("annuaire") else ""
         if annuaire in ("oui", "non"):
             a["attrs"].setdefault("annuaire_amis", ["true" if annuaire == "oui" else "false"])
+        for attr in ("date_admission_ami", "date_admission_magicien"):
+            h = cols.get(attr)
+            raw = (row.get(h) or "").strip() if h else ""
+            if not raw:
+                continue
+            iso = _iso_date(raw)
+            if iso:
+                a["attrs"].setdefault(attr, [iso])
+            else:
+                print(
+                    f"warning: unparseable {attr} {raw!r} for {a['username']!r}; skipped",
+                    file=sys.stderr,
+                )
+
+
+def _iso_date(raw):
+    """Parse an AssoConnect DD/MM/YYYY date to ISO YYYY-MM-DD; "" if invalid."""
+    s = raw.strip().strip("[]").strip()
+    parts = s.split("/")
+    if len(parts) == 3 and all(p.isdigit() for p in parts):
+        d, m, y = (int(p) for p in parts)
+        if len(parts[2]) == 4 and 1 <= m <= 12 and 1 <= d <= 31:
+            return f"{y:04d}-{m:02d}-{d:02d}"
+    return ""
 
 
 def _build_groups(accounts):
