@@ -19,9 +19,10 @@ with none of these is skipped with a warning.
   * login by email is also possible (email is set; realm allows email login);
   * password = the resolved password (treated as valid for preprod; force a
     reset for the real rollout); omitted when empty;
-  * roles: friend if AMI access is on, plus geneweb-wizard if ``Statut dans la
-    base`` is ``Magicien`` (wizards also have a friend account -> one merged
-    account with both roles);
+  * roles: the realm default role (``default-roles-<realm>``, for standard
+    account access) plus friend if AMI access is on, plus geneweb-wizard if
+    ``Statut dans la base`` is ``Magicien`` (wizards also have a friend account
+    -> one merged account with both roles);
   * geneweb_person_key from the Roglo columns (Prénom / N° d'occurence /
     Patronyme) as ``first_name.occ surname``;
   * geneweb_login = wizard login (joined from .auth) for wizards, else the
@@ -366,6 +367,14 @@ def main():
 
     with open(args.template, encoding="utf-8") as fh:
         realm = json.load(fh)
+    # Grant Keycloak's default composite role so imported users get the standard
+    # account access (offline_access + the account client's view-profile /
+    # manage-account roles, i.e. the `account` audience). Without it the account
+    # console rejects the user's token with 401.
+    default_role = f"default-roles-{(realm.get('realm') or '').lower()}"
+    for a in accounts:
+        if default_role not in a["roles"]:
+            a["roles"].insert(0, default_role)
     users = [_to_kc(a) for a in accounts]
 
     if args.out_dir:

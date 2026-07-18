@@ -128,11 +128,8 @@ def create_user(client, roles_by_name, user):
 
     loc = headers.get("Location", "")
     uid = loc.rstrip("/").rsplit("/", 1)[-1] if loc else None
-    if uid and wanted:
-        reps = [roles_by_name[n] for n in wanted if n in roles_by_name]
-        missing = [n for n in wanted if n not in roles_by_name]
-        if missing:
-            return "error", f"unknown realm role(s): {','.join(missing)}"
+    reps = [roles_by_name[n] for n in wanted if n in roles_by_name]
+    if uid and reps:
         st, _, _ = client.request("POST", f"/users/{uid}/role-mappings/realm", reps)
         if st not in (204, 201):
             return "error", f"role-mapping HTTP {st}"
@@ -176,6 +173,11 @@ def main():
         args.admin_realm, args.admin_client,
     )
     roles_by_name = client.realm_roles()
+    referenced = {r for u in users for r in (u.get("realmRoles") or [])}
+    missing_roles = sorted(referenced - set(roles_by_name))
+    if missing_roles:
+        print(f"warning: realm role(s) not found, will be skipped: "
+              f"{', '.join(missing_roles)}", file=sys.stderr)
     print(f"loading {len(users)} users into realm {args.realm!r} "
           f"({len(roles_by_name)} realm roles) with {args.workers} workers",
           file=sys.stderr)
