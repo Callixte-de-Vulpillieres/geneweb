@@ -31,10 +31,11 @@ with none of these is skipped with a warning.
     verbatim), and the ``Membres honoraires AG`` flag -> ``/Membres honoraires
     AG``; the realm group tree is derived from the values present;
   * firstName/lastName/email set as the standard fields; kept as attributes:
-    contact details (phones, gender, postal address), the sponsor (parrain),
-    the friends-directory opt-in, and the AssoConnect contact/app ids. Other
-    columns (birth date/place, family links, assoc metadata and dates,
-    comments, main password, RGPD/charter consents) stay in AssoConnect;
+    contact details (phones, gender, postal address, website), the sponsor
+    (parrain), the friends-directory opt-in, genealogy interests, activity,
+    comments (admin-only), and the AssoConnect contact/app ids. Other columns
+    (birth date/place, family links, assoc metadata and dates, main password,
+    RGPD/charter consents) stay in AssoConnect;
   * enabled = false when deceased or missing consent (kept, not skipped).
 
 Warnings (stderr): a Magicien with no matching .auth entry (and vice versa),
@@ -84,6 +85,10 @@ FIELDS = {
     "honoraire_ag": ("has", ["membres honoraires"]),
     "parrain": ("has", ["parrain"]),
     "annuaire": ("has", ["annuaire des amis"]),
+    "website": ("eq", "site internet"),
+    "genealogy_interests": ("has", ["interet genealogique"]),
+    "activity": ("eq", "activite"),
+    "comments": ("has", ["commentaires"]),
     "phone_mobile": ("has", ["telephone mobile"]),
     "phone_landline": ("has", ["telephone fixe"]),
     "sex": ("eq", "sexe"),
@@ -498,7 +503,11 @@ def _fill_attributes(accounts, cols):
         "region": "region",
         "department": "department",
         "country": "country",
+        "website": "website",
         "parrain": "parrain",
+        "genealogy_interests": "genealogy_interests",
+        "activity": "activity",
+        "comments": "comments",
     }
     for a in accounts:
         row = a["row"]
