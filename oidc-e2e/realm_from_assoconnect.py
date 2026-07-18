@@ -39,6 +39,7 @@ every account whose AMI login was suffixed: email, previous login, new login.
 import argparse
 import csv
 import json
+import os
 import re
 import sys
 import unicodedata
@@ -190,7 +191,19 @@ def main():
     ap.add_argument(
         "--template", default="oidc-e2e/keycloak-realm.json", metavar="FILE"
     )
-    ap.add_argument("--out", metavar="FILE", help="realm JSON (default: stdout)")
+    ap.add_argument("--out", metavar="FILE", help="single realm JSON (default: stdout)")
+    ap.add_argument(
+        "--out-dir", metavar="DIR",
+        help="write a Keycloak directory import: <realm>-realm.json plus chunked "
+        "<realm>-users-N.json files. Keycloak imports each users file in its own "
+        "transaction, so large realms don't hit the single-transaction import "
+        "timeout (Argon2 password hashing is slow). Mount DIR at "
+        "/opt/keycloak/data/import.",
+    )
+    ap.add_argument(
+        "--users-per-file", type=int, default=50, metavar="N",
+        help="users per chunk file for --out-dir (default 50)",
+    )
     ap.add_argument(
         "--rename-log", metavar="FILE",
         help="CSV log of AMI logins that were suffixed (email, previous, new)",
@@ -353,14 +366,45 @@ def main():
 
     with open(args.template, encoding="utf-8") as fh:
         realm = json.load(fh)
-    realm["users"] = [_to_kc(a) for a in accounts]
+    users = [_to_kc(a) for a in accounts]
 
+    if args.out_dir:
+        _write_import_dir(realm, users, args.out_dir, args.users_per_file)
+        return
+    realm["users"] = users
     text = json.dumps(realm, indent=2, ensure_ascii=False) + "\n"
     if args.out:
         with open(args.out, "w", encoding="utf-8") as fh:
             fh.write(text)
     else:
         sys.stdout.write(text)
+
+
+def _write_import_dir(realm, users, out_dir, per_file):
+    """Write a Keycloak directory import: the realm file (without users) plus
+    chunked users files. Keycloak imports each users file in its own
+    transaction, avoiding the single-transaction timeout on large realms."""
+    os.makedirs(out_dir, exist_ok=True)
+    name = realm.get("realm") or "realm"
+    realm = dict(realm)
+    realm["users"] = []
+    with open(os.path.join(out_dir, f"{name}-realm.json"), "w", encoding="utf-8") as fh:
+        json.dump(realm, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+    per_file = max(1, per_file)
+    nfiles = (len(users) + per_file - 1) // per_file
+    for k in range(nfiles):
+        chunk = users[k * per_file : (k + 1) * per_file]
+        with open(
+            os.path.join(out_dir, f"{name}-users-{k}.json"), "w", encoding="utf-8"
+        ) as fh:
+            json.dump({"realm": name, "users": chunk}, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+    print(
+        f"note: wrote {name}-realm.json + {nfiles} users file(s) "
+        f"({len(users)} users) to {out_dir}",
+        file=sys.stderr,
+    )
 
 
 def _assign_usernames(accounts, rename_log):
