@@ -9,18 +9,21 @@ files are also cross-checked against the CSV: every field present on both sides
 (wizard name; AMI login, password and person key) is compared and any
 divergence -- or an entry present in one source but not the other -- is warned.
 
-Per row -> one Keycloak account:
-  * username = ``identifiant AMI`` kept verbatim, numeric-suffixed on collision;
+Per row -> one Keycloak account. The login/password come from the first source
+that has them: the friend ``.auth`` entry, then the CSV (``identifiant AMI`` /
+``mot de passe AMI``), then -- for wizards -- the wizard ``.auth`` entry; a row
+with none of these is skipped with a warning.
+  * username = the resolved login kept verbatim, numeric-suffixed on collision;
   * login by email is also possible (email is set; realm allows email login);
-  * password = ``mot de passe AMI`` (treated as valid for preprod; force a
-    reset for the real rollout);
+  * password = the resolved password (treated as valid for preprod; force a
+    reset for the real rollout); omitted when empty;
   * roles: friend if AMI access is on, plus geneweb-wizard if ``Statut dans la
     base`` is ``Magicien`` (wizards also have a friend account -> one merged
     account with both roles);
   * geneweb_person_key from the Roglo columns (Prénom / N° d'occurence /
     Patronyme) as ``first_name.occ surname``;
-  * geneweb_login = wizard login (joined from .auth) for wizards, else the AMI
-    username;
+  * geneweb_login = wizard login (joined from .auth) for wizards, else the
+    resolved login;
   * firstName/lastName/email, and every other column kept as a user attribute
     (passwords excluded);
   * enabled = false when deceased or missing consent (kept, not skipped).
@@ -213,80 +216,95 @@ def main():
     accounts = []
     for row in rows:
         ami = col(row, "ami_id")
-        if not ami:
+        ami_pw = col(row, "ami_pw")
+        is_wizard = norm(col(row, "statut")) == "magicien"
+
+        pk = person_key(
+            col(row, "roglo_firstname"), col(row, "occ"), col(row, "roglo_surname")
+        )
+        who = ami or col(row, "email") or col(row, "contact_id")
+        if is_wizard and not pk:
+            print(f"warning: wizard {who!r} has no person key in the CSV", file=sys.stderr)
+
+        # locate the matching .auth entries (by crushed person key; friend also
+        # by exact AMI login as a fallback).
+        frd_e = frd_by_pk.get(crush(pk)) if pk else None
+        if frd_e is None and ami:
+            cands = frd_by_login.get(ami, [])
+            if cands:
+                frd_e = cands[0]
+                if pk and crush(frd_e["person_key"]) != crush(pk):
+                    print(
+                        f"warning: person key differs for AMI login {ami!r}: CSV "
+                        f"{pk!r} vs friend .auth {frd_e['person_key']!r}",
+                        file=sys.stderr,
+                    )
+        if frd_e is not None:
+            frd_used.add(crush(frd_e["person_key"]))
+
+        wiz_e = wiz_by_pk.get(crush(pk)) if pk else None
+        if wiz_e is not None:
+            wiz_used.add(crush(pk))
+
+        # resolve login/password: friend .auth -> CSV AMI -> wizard .auth -> none.
+        if frd_e is not None:
+            login, password = frd_e["login"], frd_e["password"]
+            if ami and frd_e["login"] != ami:
+                print(
+                    f"warning: AMI login differs for person {pk!r}: CSV {ami!r} "
+                    f"vs friend .auth {frd_e['login']!r}",
+                    file=sys.stderr,
+                )
+            if ami_pw and frd_e["password"] != ami_pw:
+                print(
+                    f"warning: AMI password differs for {login!r} (person {pk!r})",
+                    file=sys.stderr,
+                )
+        elif ami:
+            login, password = ami, ami_pw
+        elif is_wizard and wiz_e is not None:
+            login, password = wiz_e["login"], wiz_e["password"]
+        else:
             print(
-                f"warning: contact {col(row, 'contact_id')!r} "
-                f"({col(row, 'email')!r}) has no AMI login; skipped",
+                f"warning: contact {who!r} has no login in friend .auth, CSV or "
+                "wizard .auth; skipped",
                 file=sys.stderr,
             )
             continue
 
-        is_wizard = norm(col(row, "statut")) == "magicien"
-        is_friend = norm(col(row, "ami_active")) == "oui" or bool(ami)
+        is_friend = (
+            norm(col(row, "ami_active")) == "oui" or bool(ami) or frd_e is not None
+        )
         roles = []
         if is_wizard:
             roles.append("geneweb-wizard")
         if is_friend or is_wizard:
             roles.append("geneweb-friend")
 
-        pk = person_key(
-            col(row, "roglo_firstname"), col(row, "occ"), col(row, "roglo_surname")
-        )
-        if is_wizard and not pk:
-            print(f"warning: wizard {ami!r} has no person key in the CSV", file=sys.stderr)
-
-        geneweb_login = ami
+        # geneweb_login (conf.user): wizard login for wizards, else the account login.
+        geneweb_login = login
         if is_wizard:
-            e = wiz_by_pk.get(crush(pk))
-            if e is None:
-                print(
-                    f"warning: wizard {ami!r} (person {pk!r}) has no matching "
-                    "wizard .auth entry; using AMI login as geneweb_login",
-                    file=sys.stderr,
-                )
-            else:
-                wiz_used.add(crush(pk))
-                geneweb_login = e["login"]
+            if wiz_e is not None:
+                geneweb_login = wiz_e["login"]
                 nm = col(row, "nom_magicien")
-                if nm and e["name"] and crush(nm) != crush(e["name"]):
+                if nm and wiz_e["name"] and crush(nm) != crush(wiz_e["name"]):
                     print(
                         f"warning: wizard name differs for {pk!r}: CSV {nm!r} "
-                        f"vs wizard .auth {e['name']!r}",
+                        f"vs wizard .auth {wiz_e['name']!r}",
                         file=sys.stderr,
                     )
-
-        if is_friend and (frd_by_pk or frd_by_login):
-            e = frd_by_pk.get(crush(pk))
-            if e is not None:
-                frd_used.add(crush(e["person_key"]))
             else:
-                cands = frd_by_login.get(ami, [])
-                if cands:
-                    e = cands[0]
-                    frd_used.add(crush(e["person_key"]))
-                    print(
-                        f"warning: person key differs for AMI login {ami!r}: CSV "
-                        f"{pk!r} vs friend .auth {e['person_key']!r}",
-                        file=sys.stderr,
-                    )
-                else:
-                    print(
-                        f"warning: friend {ami!r} (person {pk!r}) not found in "
-                        "friend .auth",
-                        file=sys.stderr,
-                    )
-            if e is not None:
-                if e["login"] != ami:
-                    print(
-                        f"warning: AMI login differs for person {pk!r}: CSV "
-                        f"{ami!r} vs friend .auth {e['login']!r}",
-                        file=sys.stderr,
-                    )
-                if e["password"] != col(row, "ami_pw"):
-                    print(
-                        f"warning: AMI password differs for {ami!r} (person {pk!r})",
-                        file=sys.stderr,
-                    )
+                print(
+                    f"warning: wizard {login!r} (person {pk!r}) has no matching "
+                    f"wizard .auth entry; using {login!r} as geneweb_login",
+                    file=sys.stderr,
+                )
+
+        if is_friend and frd_e is None and (frd_by_pk or frd_by_login):
+            print(
+                f"warning: friend {login!r} (person {pk!r}) not found in friend .auth",
+                file=sys.stderr,
+            )
 
         consent = all(
             norm(col(row, c)) == "oui"
@@ -301,9 +319,9 @@ def main():
         accounts.append(
             {
                 "row": row,
-                "ami": ami,
+                "login": login,
                 "email": col(row, "email"),
-                "password": col(row, "ami_pw"),
+                "password": password,
                 "roles": roles,
                 "enabled": enabled,
                 "first": col(row, "prenom"),
@@ -344,11 +362,11 @@ def main():
 
 
 def _assign_usernames(accounts, rename_log):
-    logins = {a["ami"] for a in accounts}
+    logins = {a["login"] for a in accounts}
     used = set()
     renamed = []
     for a in accounts:
-        base = a["ami"]
+        base = a["login"]
         name = base
         if name in used:
             i = 2
