@@ -27,6 +27,9 @@ with none of these is skipped with a warning.
     Patronyme) as ``first_name.occ surname``;
   * geneweb_login = wizard login (joined from .auth) for wizards, else the
     resolved login;
+  * groups: ``Fonction dans l'Association`` -> ``/Fonction/<value>`` (kept
+    verbatim), and the ``Membres honoraires AG`` flag -> ``/Membres honoraires
+    AG``; the realm group tree is derived from the values present;
   * firstName/lastName/email set as the standard fields; kept as attributes:
     contact details (phones, gender, postal address), the sponsor (parrain),
     the friends-directory opt-in, and the AssoConnect contact/app ids. Other
@@ -77,6 +80,8 @@ FIELDS = {
     "ami_pw": ("has", ["mot de passe ami"]),
     "ami_active": ("has", ["acces ami active"]),
     "nom_magicien": ("has", ["nom magicien"]),
+    "fonction": ("has", ["fonction dans l'association"]),
+    "honoraire_ag": ("has", ["membres honoraires"]),
     "parrain": ("has", ["parrain"]),
     "annuaire": ("has", ["annuaire des amis"]),
     "phone_mobile": ("has", ["telephone mobile"]),
@@ -342,6 +347,17 @@ def main():
         if pk:
             attrs["geneweb_person_key"] = [pk]
 
+        # group membership: association function -> /Fonction/<value> (kept
+        # verbatim; reorganize/merge later in the Keycloak admin console), and
+        # the AG honorary flag -> /Membres honoraires AG when set.
+        groups = []
+        fonction = col(row, "fonction")
+        if fonction:
+            groups.append(f"/Fonction/{fonction}")
+        honoraire = norm(col(row, "honoraire_ag"))
+        if honoraire and honoraire != "non":
+            groups.append("/Membres honoraires AG")
+
         accounts.append(
             {
                 "row": row,
@@ -349,6 +365,7 @@ def main():
                 "email": col(row, "email"),
                 "password": password,
                 "roles": roles,
+                "groups": groups,
                 "enabled": enabled,
                 "first": col(row, "prenom"),
                 "last": col(row, "nom"),
@@ -377,6 +394,9 @@ def main():
 
     with open(args.template, encoding="utf-8") as fh:
         realm = json.load(fh)
+    groups = _build_groups(accounts)
+    if groups:
+        realm["groups"] = groups
     # Grant Keycloak's default composite role so imported users get the standard
     # account access (offline_access + the account client's view-profile /
     # manage-account roles, i.e. the `account` audience). Without it the account
@@ -495,6 +515,29 @@ def _fill_attributes(accounts, cols):
             a["attrs"].setdefault("annuaire_amis", ["true" if annuaire == "oui" else "false"])
 
 
+def _build_groups(accounts):
+    """Build the realm group tree from the paths referenced by users.
+    "/Top" -> top-level group; "/Parent/Sub" -> subgroup under Parent."""
+    tops, order = {}, []
+    for a in accounts:
+        for path in a.get("groups", []):
+            parts = [p for p in path.split("/") if p]
+            top = parts[0]
+            if top not in tops:
+                tops[top] = []
+                order.append(top)
+            if len(parts) > 1 and parts[1] not in tops[top]:
+                tops[top].append(parts[1])
+    groups = []
+    for top in order:
+        g = {"name": top}
+        subs = sorted(tops[top])
+        if subs:
+            g["subGroups"] = [{"name": s} for s in subs]
+        groups.append(g)
+    return groups
+
+
 def _norm_gender(raw):
     """Map AssoConnect gender values to the canonical select options, so they
     pass the user-profile ``options`` validation; unknown/empty -> unset."""
@@ -532,6 +575,8 @@ def _to_kc(a):
         "realmRoles": a["roles"],
         "attributes": a["attrs"],
     }
+    if a.get("groups"):
+        u["groups"] = a["groups"]
     # Only set a password credential when we actually have one: an empty value
     # makes Keycloak's realm import fail with `argument "content" is null` and
     # rolls back every user. Passwordless accounts (wizards, blank AMI passwords)

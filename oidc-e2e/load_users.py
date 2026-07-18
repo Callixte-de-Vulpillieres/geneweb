@@ -106,6 +106,12 @@ class Client:
         _, _, roles = self.request("GET", "/roles")
         return {r["name"]: {"id": r["id"], "name": r["name"]} for r in (roles or [])}
 
+    def group_id_by_path(self, path):
+        _, _, g = self.request(
+            "GET", "/group-by-path/" + urllib.parse.quote(path.strip("/"))
+        )
+        return g.get("id") if isinstance(g, dict) else None
+
 
 def load_users(source_files):
     users = []
@@ -116,10 +122,12 @@ def load_users(source_files):
     return users
 
 
-def create_user(client, roles_by_name, user):
-    """Create one user and assign its realm roles. Returns (status, detail)."""
+def create_user(client, roles_by_name, group_ids, user):
+    """Create one user, assign its realm roles and groups. Returns
+    (status, detail)."""
     rep = dict(user)
     wanted = rep.pop("realmRoles", []) or []
+    wanted_groups = rep.pop("groups", []) or []
     status, headers, _ = client.request("POST", "/users", rep)
     if status == 409:
         return "exists", None
@@ -128,11 +136,19 @@ def create_user(client, roles_by_name, user):
 
     loc = headers.get("Location", "")
     uid = loc.rstrip("/").rsplit("/", 1)[-1] if loc else None
+    if not uid:
+        return "created", None
     reps = [roles_by_name[n] for n in wanted if n in roles_by_name]
-    if uid and reps:
+    if reps:
         st, _, _ = client.request("POST", f"/users/{uid}/role-mappings/realm", reps)
         if st not in (204, 201):
             return "error", f"role-mapping HTTP {st}"
+    for gpath in wanted_groups:
+        gid = group_ids.get(gpath)
+        if gid:
+            st, _, _ = client.request("PUT", f"/users/{uid}/groups/{gid}")
+            if st not in (204, 201):
+                return "error", f"group HTTP {st}"
     return "created", None
 
 
@@ -178,9 +194,18 @@ def main():
     if missing_roles:
         print(f"warning: realm role(s) not found, will be skipped: "
               f"{', '.join(missing_roles)}", file=sys.stderr)
+
+    group_ids = {}
+    for path in sorted({g for u in users for g in (u.get("groups") or [])}):
+        gid = client.group_id_by_path(path)
+        if gid:
+            group_ids[path] = gid
+        else:
+            print(f"warning: group not found, will be skipped: {path}", file=sys.stderr)
+
     print(f"loading {len(users)} users into realm {args.realm!r} "
-          f"({len(roles_by_name)} realm roles) with {args.workers} workers",
-          file=sys.stderr)
+          f"({len(roles_by_name)} realm roles, {len(group_ids)} groups) "
+          f"with {args.workers} workers", file=sys.stderr)
 
     counts = {"created": 0, "exists": 0, "error": 0}
     errors = []
@@ -190,7 +215,7 @@ def main():
     def work(u):
         nonlocal done
         try:
-            outcome, detail = create_user(client, roles_by_name, u)
+            outcome, detail = create_user(client, roles_by_name, group_ids, u)
         except Exception as e:  # network etc.
             outcome, detail = "error", repr(e)
         with lock:
