@@ -403,12 +403,16 @@ def _to_kc(a):
         "enabled": a["enabled"],
         "firstName": a["first"],
         "lastName": a["last"],
-        "credentials": [
-            {"type": "password", "value": a["password"], "temporary": False}
-        ],
         "realmRoles": a["roles"],
         "attributes": a["attrs"],
     }
+    # Only set a password credential when we actually have one: an empty value
+    # makes Keycloak's realm import fail with `argument "content" is null` and
+    # rolls back every user. Passwordless accounts (wizards, blank AMI passwords)
+    # are imported and get a password via reset.
+    pw = (a["password"] or "").strip()
+    if pw:
+        u["credentials"] = [{"type": "password", "value": pw, "temporary": False}]
     if a["email"]:
         u["email"] = a["email"]
         u["emailVerified"] = True
