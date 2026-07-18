@@ -27,10 +27,11 @@ with none of these is skipped with a warning.
     Patronyme) as ``first_name.occ surname``;
   * geneweb_login = wizard login (joined from .auth) for wizards, else the
     resolved login;
-  * firstName/lastName/email set as the standard fields; the only extra
-    attributes kept are the AssoConnect contact id and app id (for
-    reconciliation) -- all other columns (address, phone, birth date, family
-    links, consents, comments, assoc metadata) stay in AssoConnect, not here;
+  * firstName/lastName/email set as the standard fields; kept as attributes:
+    contact details (phones, gender, postal address), the sponsor (parrain),
+    the friends-directory opt-in, and the AssoConnect contact/app ids. Other
+    columns (birth date/place, family links, assoc metadata and dates,
+    comments, main password, RGPD/charter consents) stay in AssoConnect;
   * enabled = false when deceased or missing consent (kept, not skipped).
 
 Warnings (stderr): a Magicien with no matching .auth entry (and vice versa),
@@ -76,6 +77,18 @@ FIELDS = {
     "ami_pw": ("has", ["mot de passe ami"]),
     "ami_active": ("has", ["acces ami active"]),
     "nom_magicien": ("has", ["nom magicien"]),
+    "parrain": ("has", ["parrain"]),
+    "annuaire": ("has", ["annuaire des amis"]),
+    "phone_mobile": ("has", ["telephone mobile"]),
+    "phone_landline": ("has", ["telephone fixe"]),
+    "sex": ("eq", "sexe"),
+    "address": ("eq", "adresse"),
+    "address_complement": ("has", ["complement d'adresse"]),
+    "postal_code": ("has", ["code postal"]),
+    "city": ("eq", "ville"),
+    "region": ("eq", "region"),
+    "department": ("has", ["departement"]),
+    "country": ("eq", "pays"),
     "deceased": ("eq", "decede"),
     "consent_keep": ("has", ["autorise la conservation"]),
     "consent_access": ("has", ["droit d'acces"]),
@@ -444,21 +457,53 @@ def _assign_usernames(accounts, rename_log):
 
 
 def _fill_attributes(accounts, cols):
-    # Keycloak is the identity provider, not the member database: keep only what
-    # login and GeneWeb need (geneweb_login / geneweb_person_key are already set,
-    # firstName / lastName / email / username / password map to standard fields)
-    # plus two opaque AssoConnect IDs for reconciliation. Every other column --
-    # address, phone, birth date, family links, consents, comments, assoc
-    # metadata -- stays in AssoConnect and is deliberately NOT stored here.
-    extra = {
-        "assoconnect_contact_id": cols.get("contact_id"),
-        "assoconnect_app_id": cols.get("app_id"),
+    # Keycloak is the identity provider, not the member database. Keep the
+    # columns that are useful on the account/identity side -- contact details,
+    # the sponsor ("parrain"), the friends-directory opt-in -- plus two opaque
+    # AssoConnect IDs for reconciliation. Columns used only to derive
+    # roles / enabled / person key / wizard join stay inputs. Everything else
+    # (birth date/place, family links, assoc metadata and dates, comments, the
+    # main AssoConnect password, RGPD/charter consents) stays in AssoConnect.
+    # These names are declared in the realm user-profile config with proper
+    # input types (tel/select/...) and view/edit permissions.
+    direct = {
+        "assoconnect_contact_id": "contact_id",
+        "assoconnect_app_id": "app_id",
+        "phone_mobile": "phone_mobile",
+        "phone_landline": "phone_landline",
+        "address": "address",
+        "address_complement": "address_complement",
+        "postal_code": "postal_code",
+        "city": "city",
+        "region": "region",
+        "department": "department",
+        "country": "country",
+        "parrain": "parrain",
     }
     for a in accounts:
-        for attr, header in extra.items():
-            value = (a["row"].get(header) or "").strip() if header else ""
+        row = a["row"]
+        for attr, field in direct.items():
+            h = cols.get(field)
+            value = (row.get(h) or "").strip() if h else ""
             if value:
                 a["attrs"].setdefault(attr, [value])
+        gender = _norm_gender(row.get(cols.get("sex")) if cols.get("sex") else "")
+        if gender:
+            a["attrs"].setdefault("gender", [gender])
+        annuaire = norm(row.get(cols.get("annuaire")) or "") if cols.get("annuaire") else ""
+        if annuaire in ("oui", "non"):
+            a["attrs"].setdefault("annuaire_amis", ["true" if annuaire == "oui" else "false"])
+
+
+def _norm_gender(raw):
+    """Map AssoConnect gender values to the canonical select options, so they
+    pass the user-profile ``options`` validation; unknown/empty -> unset."""
+    g = norm(raw)
+    if g in ("masculin", "homme", "m"):
+        return "Masculin"
+    if g in ("feminin", "femme", "f"):
+        return "Féminin"
+    return ""
 
 
 def _dedup_emails(accounts):
