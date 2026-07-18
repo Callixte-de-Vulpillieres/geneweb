@@ -13,7 +13,9 @@ Per row -> one Keycloak account. The login/password come from the first source
 that has them: the friend ``.auth`` entry, then the CSV (``identifiant AMI`` /
 ``mot de passe AMI``), then -- for wizards -- the wizard ``.auth`` entry; a row
 with none of these is skipped with a warning.
-  * username = the resolved login kept verbatim, numeric-suffixed on collision;
+  * username = the resolved login kept verbatim, numeric-suffixed on a
+    case-insensitive collision (Keycloak lowercases usernames and has no
+    case-sensitive mode, so logins differing only by case must be split);
   * login by email is also possible (email is set; realm allows email login);
   * password = the resolved password (treated as valid for preprod; force a
     reset for the real rollout); omitted when empty;
@@ -362,19 +364,25 @@ def main():
 
 
 def _assign_usernames(accounts, rename_log):
-    logins = {a["login"] for a in accounts}
+    # Keycloak lowercases usernames and enforces case-insensitive uniqueness
+    # (the JPA store has no case-sensitive mode), so dedup on the lowercased
+    # login: two logins differing only by case would collide on import. The
+    # first keeps its verbatim login; later collisions get a numeric suffix.
+    # geneweb_login is a separate claim kept in exact case, so GeneWeb still
+    # gets the case-sensitive login.
+    logins = {a["login"].lower() for a in accounts}
     used = set()
     renamed = []
     for a in accounts:
         base = a["login"]
         name = base
-        if name in used:
+        if name.lower() in used:
             i = 2
-            while f"{base}{i}" in used or f"{base}{i}" in logins:
+            while f"{base}{i}".lower() in used or f"{base}{i}".lower() in logins:
                 i += 1
             name = f"{base}{i}"
             renamed.append((a["email"], base, name))
-        used.add(name)
+        used.add(name.lower())
         a["username"] = name
     if rename_log and renamed:
         with open(rename_log, "w", encoding="utf-8", newline="") as fh:
